@@ -18,7 +18,8 @@ def run_gemini_audit(url, brand_name, audience, competitors, api_key):
     """
     try:
         genai.configure(api_key=api_key)
-        model = genai.GenerativeModel('gemini-1.5-pro-latest')
+        # --- MODEL UPDATED TO 2.5 ---
+        model = genai.GenerativeModel('gemini-2.5-pro-latest')
 
         # Construct the detailed prompt from user inputs
         prompt = f"""
@@ -103,7 +104,8 @@ with st.sidebar:
 
 # Main Content
 st.title("🤖 AI-Powered Website & Brand Auditor")
-st.markdown("This tool leverages the Gemini 1.5 Pro model to perform a comprehensive digital marketing and SEO audit based on the prompt you provided. Enter your details in the sidebar and click 'Start Audit' to begin.")
+# --- DESCRIPTION UPDATED TO 2.5 ---
+st.markdown("This tool leverages the Gemini 2.5 Pro model to perform a comprehensive digital marketing and SEO audit based on the prompt you provided. Enter your details in the sidebar and click 'Start Audit' to begin.")
 
 if st.button("🚀 Start Audit", type="primary", use_container_width=True):
     # --- Input Validation ---
@@ -128,3 +130,4 @@ if st.button("🚀 Start Audit", type="primary", use_container_width=True):
         st.markdown(audit_results)
         st.balloons()
         st.success("Audit Complete!")
+
