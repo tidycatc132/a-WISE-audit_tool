@@ -5,7 +5,7 @@ import time
 
 # --- Page Configuration ---
 st.set_page_config(
-    page_title="AI-Powered Website & Brand Auditor",
+    page_title="A WISE Website Audit Tool",
     page_icon="🤖",
     layout="wide",
     initial_sidebar_state="expanded",
@@ -88,9 +88,8 @@ def run_gemini_audit(url, brand_name, audience, competitors, api_key):
 
 # Sidebar
 with st.sidebar:
-    st.image("https://placehold.co/400x150/000000/FFFFFF?text=Audit+Bot", use_column_width=True)
     st.title("Audit Configuration")
-    st.info("Fill in the details below to run a comprehensive, AI-powered website and brand audit.")
+    st.info("Fill in the details below to run a comprehensive, WISE powered website and brand audit.")
 
     api_key = st.text_input("Enter your Gemini API Key", type="password")
 
@@ -103,7 +102,7 @@ with st.sidebar:
     st.success("Ready to audit!")
 
 # Main Content
-st.title("🤖 AI-Powered Website & Brand Auditor")
+st.title("🤖 A WISE Website Audit Tool")
 # --- DESCRIPTION UPDATED TO 2.5 ---
 st.markdown("This tool leverages the Gemini 2.5 Pro model to perform a comprehensive digital marketing and SEO audit based on the prompt you provided. Enter your details in the sidebar and click 'Start Audit' to begin.")
 
@@ -126,7 +125,7 @@ if st.button("🚀 Start Audit", type="primary", use_container_width=True):
                 api_key=api_key
             )
 
-        st.header("📊 Audit Report", divider="rainbow")
+        st.header("Audit Report", divider="rainbow")
         st.markdown(audit_results)
         st.balloons()
         st.success("Audit Complete!")
