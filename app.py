@@ -19,7 +19,7 @@ def run_gemini_audit(url, brand_name, audience, competitors, api_key):
     try:
         genai.configure(api_key=api_key)
         # --- MODEL UPDATED TO 2.5 ---
-        model = genai.GenerativeModel('gemini-2.5-pro-latest')
+        model = genai.GenerativeModel('gemini-2.5-pro')
 
         # Construct the detailed prompt from user inputs
         prompt = f"""
