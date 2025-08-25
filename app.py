@@ -2,6 +2,9 @@ import streamlit as st
 import pandas as pd
 import google.generativeai as genai
 import time
+import io
+import re
+from fpdf import FPDF  # pip install fpdf2
 
 # --- Page Configuration ---
 st.set_page_config(
@@ -10,6 +13,96 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="expanded",
 )
+
+# ---------- Helpers: Export ----------
+
+def markdown_to_sections(md: str):
+    """Split markdown into [(section, content)] using H2/H3 headings.
+    Falls back to a single section if no headings found.
+    """
+    if not md or not isinstance(md, str):
+        return [("Report", str(md))]
+
+    # Normalize line endings
+    text = md.replace('\r\n', '\n').strip()
+
+    # Capture H2/H3 headings and their blocks
+    pattern = re.compile(r"^(###[ ]+(.*)|##[ ]+(.*))\s*$", re.MULTILINE)
+    matches = list(pattern.finditer(text))
+
+    if not matches:
+        return [("Report", text)]
+
+    sections = []
+    for i, m in enumerate(matches):
+        start = m.end()
+        end = matches[i + 1].start() if i + 1 < len(matches) else len(text)
+        heading = m.group(2) or m.group(3) or "Section"
+        content = text[start:end].strip('\n')
+        sections.append((heading.strip(), content.strip()))
+    return sections
+
+
+def build_csv_bytes_from_markdown(md: str) -> bytes:
+    sections = markdown_to_sections(md)
+    df = pd.DataFrame(sections, columns=["Section", "Content"])
+    return df.to_csv(index=False).encode("utf-8")
+
+
+class PDF(FPDF):
+    def header(self):
+        # Title header (set in caller via self.report_title)
+        if getattr(self, "report_title", None):
+            self.set_font("Helvetica", "B", 14)
+            self.multi_cell(0, 8, self.report_title, align="L")
+            self.ln(2)
+        # thin line
+        self.set_draw_color(200, 200, 200)
+        self.set_line_width(0.2)
+        self.line(10, self.get_y(), 200, self.get_y())
+        self.ln(3)
+
+    def footer(self):
+        self.set_y(-12)
+        self.set_font("Helvetica", size=8)
+        self.set_text_color(120)
+        self.cell(0, 8, f"Page {self.page_no()}", align="R")
+
+
+def build_pdf_bytes_from_markdown(md: str, title: str = "Audit Report") -> bytes:
+    pdf = PDF(unit="mm", format="A4")
+    pdf.set_auto_page_break(auto=True, margin=15)
+    pdf.add_page()
+    pdf.report_title = title
+
+    pdf.set_font("Helvetica", size=11)
+
+    # Convert simple markdown: treat headings and bullets
+    lines = md.replace('\r\n', '\n').split('\n')
+    for line in lines:
+        stripped = line.strip()
+        if not stripped:
+            pdf.ln(2)
+            continue
+        if stripped.startswith("### "):
+            pdf.set_font("Helvetica", "B", 13)
+            pdf.multi_cell(0, 6, stripped[4:])
+            pdf.ln(1)
+            pdf.set_font("Helvetica", size=11)
+        elif stripped.startswith("## "):
+            pdf.set_font("Helvetica", "B", 14)
+            pdf.multi_cell(0, 7, stripped[3:])
+            pdf.ln(1)
+            pdf.set_font("Helvetica", size=11)
+        elif stripped.startswith("- ") or stripped.startswith("* "):
+            pdf.cell(4)  # indent
+            pdf.multi_cell(0, 5, "• " + stripped[2:])
+        else:
+            # Remove basic markdown bold/italics markers for PDF text
+            cleaned = re.sub(r"[*_]{1,2}", "", stripped)
+            pdf.multi_cell(0, 5, cleaned)
+    return pdf.output(dest="S").encode("latin-1")
+
 
 # --- Gemini API Function ---
 def run_gemini_audit(url, brand_name, audience, competitors, api_key):
@@ -103,8 +196,12 @@ with st.sidebar:
 
 # Main Content
 st.title("🤖 A WISE Website Audit Tool")
-# --- DESCRIPTION UPDATED TO 2.5 ---
 st.markdown("This tool leverages the Gemini 2.5 Pro model to perform a comprehensive digital marketing and SEO audit based on the prompt you provided. Enter your details in the sidebar and click 'Start Audit' to begin.")
+
+# Session state to hold last results for exporting
+if "audit_results" not in st.session_state:
+    st.session_state.audit_results = None
+    st.session_state.report_title = None
 
 if st.button("🚀 Start Audit", type="primary", use_container_width=True):
     # --- Input Validation ---
@@ -124,9 +221,55 @@ if st.button("🚀 Start Audit", type="primary", use_container_width=True):
                 competitors=competitors_input,
                 api_key=api_key
             )
-
+        st.session_state.audit_results = audit_results
+        st.session_state.report_title = f"Audit Report — {brand_name_input} ({url_input})"
         st.header("Audit Report", divider="rainbow")
         st.markdown(audit_results)
         st.balloons()
         st.success("Audit Complete!")
 
+# --- Export Section (CSV + PDF) ---
+if st.session_state.audit_results:
+    st.subheader("Export Report")
+    col1, col2, col3 = st.columns([1,1,2])
+
+    # CSV export (Section, Content)
+    with col1:
+        csv_bytes = build_csv_bytes_from_markdown(st.session_state.audit_results)
+        st.download_button(
+            label="⬇️ Download CSV",
+            data=csv_bytes,
+            file_name="audit_report.csv",
+            mime="text/csv",
+            use_container_width=True,
+        )
+
+    # PDF export (nicely formatted text PDF)
+    with col2:
+        pdf_bytes = build_pdf_bytes_from_markdown(
+            st.session_state.audit_results,
+            title=st.session_state.report_title or "Audit Report"
+        )
+        st.download_button(
+            label="⬇️ Download PDF",
+            data=pdf_bytes,
+            file_name="audit_report.pdf",
+            mime="application/pdf",
+            use_container_width=True,
+        )
+
+    # Optional: raw Markdown download (nice to have)
+    with col3:
+        st.download_button(
+            label="⬇️ Download Markdown (.md)",
+            data=(st.session_state.audit_results or "").encode("utf-8"),
+            file_name="audit_report.md",
+            mime="text/markdown",
+            use_container_width=True,
+        )
+
+# --- Notes ---
+st.caption(
+    "Exports: CSV splits the report by sections using H2/H3 headings into two columns (Section, Content). "
+    "PDF is a simple, readable text layout. For fully-styled HTML→PDF, consider adding markdown→HTML and a headless renderer (e.g., WeasyPrint/Puppeteer) in your deployment."
+)
