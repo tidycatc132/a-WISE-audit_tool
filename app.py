@@ -4,7 +4,6 @@ import google.generativeai as genai
 import time
 import io
 import re
-from fpdf import FPDF  # pip install fpdf2
 
 # --- Page Configuration ---
 st.set_page_config(
@@ -14,94 +13,78 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
-# ---------- Helpers: Export ----------
+# ----------------------
+# Helpers: Markdown table → DataFrame
+# ----------------------
+TABLE_HEADER_SEP_RE = re.compile(r"^\s*\|?\s*(:?-{3,}:?\s*\|\s*)+:?-{3,}:?\s*$")
+HEADING_RE = re.compile(r"^(#+)\s+(.*)")
 
-def markdown_to_sections(md: str):
-    """Split markdown into [(section, content)] using H2/H3 headings.
-    Falls back to a single section if no headings found.
+
+def _split_md_row(line: str) -> list:
+    # Trim leading/trailing pipe, then split by pipes
+    line = line.strip()
+    if line.startswith("|"):
+        line = line[1:]
+    if line.endswith("|"):
+        line = line[:-1]
+    # Split on unescaped pipes (simple case)
+    return [cell.strip().strip("` ") for cell in line.split("|")]
+
+
+def parse_markdown_tables(md_text: str) -> dict:
+    """Extract markdown pipe tables from text.
+    Returns dict {table_name: DataFrame}.
+    Table name is best-effort from the nearest preceding heading, else Table N.
     """
-    if not md or not isinstance(md, str):
-        return [("Report", str(md))]
-
-    # Normalize line endings
-    text = md.replace('\r\n', '\n').strip()
-
-    # Capture H2/H3 headings and their blocks
-    pattern = re.compile(r"^(###[ ]+(.*)|##[ ]+(.*))\s*$", re.MULTILINE)
-    matches = list(pattern.finditer(text))
-
-    if not matches:
-        return [("Report", text)]
-
-    sections = []
-    for i, m in enumerate(matches):
-        start = m.end()
-        end = matches[i + 1].start() if i + 1 < len(matches) else len(text)
-        heading = m.group(2) or m.group(3) or "Section"
-        content = text[start:end].strip('\n')
-        sections.append((heading.strip(), content.strip()))
-    return sections
-
-
-def build_csv_bytes_from_markdown(md: str) -> bytes:
-    sections = markdown_to_sections(md)
-    df = pd.DataFrame(sections, columns=["Section", "Content"])
-    return df.to_csv(index=False).encode("utf-8")
-
-
-class PDF(FPDF):
-    def header(self):
-        # Title header (set in caller via self.report_title)
-        if getattr(self, "report_title", None):
-            self.set_font("Helvetica", "B", 14)
-            self.multi_cell(0, 8, self.report_title, align="L")
-            self.ln(2)
-        # thin line
-        self.set_draw_color(200, 200, 200)
-        self.set_line_width(0.2)
-        self.line(10, self.get_y(), 200, self.get_y())
-        self.ln(3)
-
-    def footer(self):
-        self.set_y(-12)
-        self.set_font("Helvetica", size=8)
-        self.set_text_color(120)
-        self.cell(0, 8, f"Page {self.page_no()}", align="R")
-
-
-def build_pdf_bytes_from_markdown(md: str, title: str = "Audit Report") -> bytes:
-    pdf = PDF(unit="mm", format="A4")
-    pdf.set_auto_page_break(auto=True, margin=15)
-    pdf.add_page()
-    pdf.report_title = title
-
-    pdf.set_font("Helvetica", size=11)
-
-    # Convert simple markdown: treat headings and bullets
-    lines = md.replace('\r\n', '\n').split('\n')
-    for line in lines:
-        stripped = line.strip()
-        if not stripped:
-            pdf.ln(2)
+    lines = md_text.splitlines()
+    tables = {}
+    cur_heading = None
+    table_idx = 0
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        # Track most recent heading as a potential table name
+        m = HEADING_RE.match(line)
+        if m:
+            cur_heading = m.group(2).strip()
+            i += 1
             continue
-        if stripped.startswith("### "):
-            pdf.set_font("Helvetica", "B", 13)
-            pdf.multi_cell(0, 6, stripped[4:])
-            pdf.ln(1)
-            pdf.set_font("Helvetica", size=11)
-        elif stripped.startswith("## "):
-            pdf.set_font("Helvetica", "B", 14)
-            pdf.multi_cell(0, 7, stripped[3:])
-            pdf.ln(1)
-            pdf.set_font("Helvetica", size=11)
-        elif stripped.startswith("- ") or stripped.startswith("* "):
-            pdf.cell(4)  # indent
-            pdf.multi_cell(0, 5, "• " + stripped[2:])
-        else:
-            # Remove basic markdown bold/italics markers for PDF text
-            cleaned = re.sub(r"[*_]{1,2}", "", stripped)
-            pdf.multi_cell(0, 5, cleaned)
-    return pdf.output(dest="S").encode("latin-1")
+
+        # Detect start of table: header row with at least one pipe, followed by separator row of dashes
+        if "|" in line and i + 1 < len(lines) and TABLE_HEADER_SEP_RE.match(lines[i + 1]):
+            header_cells = _split_md_row(line)
+            # Collect data rows until a blank line or a non-pipe format line
+            data_rows = []
+            i += 2  # skip header & separator
+            while i < len(lines):
+                row = lines[i]
+                if not row.strip():
+                    break
+                if "|" not in row:
+                    break
+                data_rows.append(_split_md_row(row))
+                i += 1
+
+            # Build DataFrame (handle ragged rows)
+            max_len = max([len(header_cells)] + [len(r) for r in data_rows] or [0])
+            header = header_cells + [f"col_{k}" for k in range(len(header_cells), max_len)]
+            fixed_rows = [r + [""] * (max_len - len(r)) for r in data_rows]
+            df = pd.DataFrame(fixed_rows, columns=header)
+
+            # Name
+            table_idx += 1
+            name_base = cur_heading or f"Table {table_idx}"
+            name = name_base
+            # Ensure unique key
+            k = 2
+            while name in tables:
+                name = f"{name_base} ({k})"
+                k += 1
+            tables[name] = df
+            continue  # continue without incrementing i here since we've already moved
+
+        i += 1
+    return tables
 
 
 # --- Gemini API Function ---
@@ -120,7 +103,6 @@ def run_gemini_audit(url, brand_name, audience, competitors, api_key):
         Your objective is to perform a comprehensive website and brand audit for the provided business. You will analyze the brand's digital footprint, focusing on its website performance, search engine visibility, and overall online authority. Your analysis must be in-depth, data-driven (using your knowledge base of common metrics and best practices), and conclude with a prioritized list of actionable recommendations.
 
         ## 1. User-Provided Information:
-
         - **Website URL:** {url}
         - **Brand/Company Name:** {brand_name}
         - **Primary Target Audience:** {audience}
@@ -166,48 +148,44 @@ def run_gemini_audit(url, brand_name, audience, competitors, api_key):
         - **Why:** The business or SEO impact.
         - **How:** A high-level summary of implementation.
 
-        Maintain a professional, consultative tone throughout the report.
+        IMPORTANT: Whenever you present tabular data, render it as a standard Markdown pipe table with a header row and a separator row (---). Do not embed images of tables. Use concise column headers.
         """
 
         # Call the API
         response = model.generate_content(prompt)
         return response.text
-
     except Exception as e:
         return f"An error occurred: {e}"
 
 
 # --- UI Layout ---
+# Sidebar with st.sidebar:
+st.title("Audit Configuration")
+st.info("Fill in the details below to run a comprehensive, WISE powered website and brand audit.")
+api_key = st.text_input("Enter your Gemini API Key", type="password")
 
-# Sidebar
-with st.sidebar:
-    st.title("Audit Configuration")
-    st.info("Fill in the details below to run a comprehensive, WISE powered website and brand audit.")
+st.header("Business Information")
+url_input = st.text_input("Website URL", "https://www.wisedigitalpartners.com/")
+brand_name_input = st.text_input("Brand/Company Name", "WISE Digital Partners")
+audience_input = st.text_area("Primary Target Audience", "Small to medium-sized business owners, aged 30-55")
+competitors_input = st.text_area("Top 3 Competitors (URLs)", "https://thriveagency.com/\nhttps://www.scorpion.co/\nhttps://rankings.io/")
 
-    api_key = st.text_input("Enter your Gemini API Key", type="password")
-
-    st.header("Business Information")
-    url_input = st.text_input("Website URL", "https://www.wisedigitalpartners.com/")
-    brand_name_input = st.text_input("Brand/Company Name", "WISE Digital Partners")
-    audience_input = st.text_area("Primary Target Audience", "Small to medium-sized business owners, aged 30-55")
-    competitors_input = st.text_area("Top 3 Competitors (URLs)", "https://thriveagency.com/\nhttps://www.scorpion.co/\nhttps://rankings.io/")
-
-    st.success("Ready to audit!")
+st.success("Ready to audit!")
 
 # Main Content
 st.title("🤖 A WISE Website Audit Tool")
 st.markdown("This tool leverages the Gemini 2.5 Pro model to perform a comprehensive digital marketing and SEO audit based on the prompt you provided. Enter your details in the sidebar and click 'Start Audit' to begin.")
 
-# Session state to hold last results for exporting
 if "audit_results" not in st.session_state:
     st.session_state.audit_results = None
-    st.session_state.report_title = None
+if "audit_tables" not in st.session_state:
+    st.session_state.audit_tables = {}
 
 if st.button("🚀 Start Audit", type="primary", use_container_width=True):
     # --- Input Validation ---
     if not api_key:
         st.error("Please enter your Gemini API Key in the sidebar.")
-    elif not url_input or not url_input.startswith(('http://', 'https://')):
+    elif not url_input or not url_input.startswith(("http://", "https://")):
         st.error("Please enter a valid Website URL.")
     elif not brand_name_input:
         st.error("Please enter a Brand/Company Name.")
@@ -221,55 +199,50 @@ if st.button("🚀 Start Audit", type="primary", use_container_width=True):
                 competitors=competitors_input,
                 api_key=api_key
             )
-        st.session_state.audit_results = audit_results
-        st.session_state.report_title = f"Audit Report — {brand_name_input} ({url_input})"
-        st.header("Audit Report", divider="rainbow")
-        st.markdown(audit_results)
-        st.balloons()
-        st.success("Audit Complete!")
+            st.session_state.audit_results = audit_results
+            st.header("Audit Report", divider="rainbow")
+            st.markdown(audit_results)
 
-# --- Export Section (CSV + PDF) ---
+            # Parse markdown tables for CSV export
+            tables = parse_markdown_tables(audit_results or "")
+            st.session_state.audit_tables = tables
+
+            if tables:
+                st.success(f"Found {len(tables)} table(s) in the report. You can preview and export them as CSV below.")
+                for name, df in tables.items():
+                    with st.expander(f"Preview: {name}", expanded=False):
+                        st.dataframe(df, use_container_width=True)
+                        csv_buf = io.StringIO()
+                        df.to_csv(csv_buf, index=False)
+                        st.download_button(
+                            label=f"⬇️ Download '{name}' as CSV",
+                            data=csv_buf.getvalue(),
+                            file_name=f"{re.sub(r'[^A-Za-z0-9_-]+', '_', name.lower())}.csv",
+                            mime="text/csv",
+                            use_container_width=True,
+                        )
+            else:
+                st.info("No Markdown tables were detected. To enable CSV export, ensure the model outputs tables in Markdown pipe-table format.")
+
+            st.balloons()
+            st.success("Audit Complete!")
+
+# --- Standalone CSV Export section (if user navigates or reruns without re-auditing) ---
 if st.session_state.audit_results:
-    st.subheader("Export Report")
-    col1, col2, col3 = st.columns([1,1,2])
-
-    # CSV export (Section, Content)
-    with col1:
-        csv_bytes = build_csv_bytes_from_markdown(st.session_state.audit_results)
+    st.divider()
+    st.subheader("CSV Export")
+    if st.session_state.audit_tables:
+        sel = st.selectbox("Choose a table to export:", list(st.session_state.audit_tables.keys()))
+        df_sel = st.session_state.audit_tables[sel]
+        st.dataframe(df_sel, use_container_width=True)
+        csv_buf2 = io.StringIO()
+        df_sel.to_csv(csv_buf2, index=False)
         st.download_button(
-            label="⬇️ Download CSV",
-            data=csv_bytes,
-            file_name="audit_report.csv",
+            label=f"⬇️ Download '{sel}' as CSV",
+            data=csv_buf2.getvalue(),
+            file_name=f"{re.sub(r'[^A-Za-z0-9_-]+', '_', sel.lower())}.csv",
             mime="text/csv",
             use_container_width=True,
         )
-
-    # PDF export (nicely formatted text PDF)
-    with col2:
-        pdf_bytes = build_pdf_bytes_from_markdown(
-            st.session_state.audit_results,
-            title=st.session_state.report_title or "Audit Report"
-        )
-        st.download_button(
-            label="⬇️ Download PDF",
-            data=pdf_bytes,
-            file_name="audit_report.pdf",
-            mime="application/pdf",
-            use_container_width=True,
-        )
-
-    # Optional: raw Markdown download (nice to have)
-    with col3:
-        st.download_button(
-            label="⬇️ Download Markdown (.md)",
-            data=(st.session_state.audit_results or "").encode("utf-8"),
-            file_name="audit_report.md",
-            mime="text/markdown",
-            use_container_width=True,
-        )
-
-# --- Notes ---
-st.caption(
-    "Exports: CSV splits the report by sections using H2/H3 headings into two columns (Section, Content). "
-    "PDF is a simple, readable text layout. For fully-styled HTML→PDF, consider adding markdown→HTML and a headless renderer (e.g., WeasyPrint/Puppeteer) in your deployment."
-)
+    else:
+        st.info("Run an audit or ensure the response includes Markdown tables to enable CSV export.")
