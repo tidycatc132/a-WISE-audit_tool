@@ -1,81 +1,56 @@
-# Website & Brand Visibility Auditor
+# a WISE Website Audit App — Streamlit + Gemini 2.5 Pro
 
-This Streamlit application performs a comprehensive audit of a website's online presence, including SEO, social media visibility, brand sentiment, and competitor analysis.
+A simple Streamlit app that turns your audit **prompt** into a working tool using **google-generativeai** (Gemini 2.5 Pro). It collects inputs (URL, brand, audience, competitors), sends a structured prompt to Gemini, renders a Markdown audit report, and lets you **download the output as a PDF**.
 
-## 🚀 Features
+## Features
+- Streamlit UI for quick audits
+- Uses **Gemini 2.5 Pro** via `google-generativeai`
+- Displays results as Markdown
+- **Download PDF** of the audit
+- Uses **pandas** to present a compact input/metadata summary
 
--   **SEO Audit:** Checks on-page and technical SEO factors.
--   **Social Media Scan:** Identifies linked social media profiles and their activity levels.
--   **Brand Sentiment Analysis:** Gauges public opinion from online mentions.
--   **Competitor Analysis:** Identifies key competitors and compares their online presence.
 
-## ⚙️ Installation & Setup
+## Tech
+- Python 3.10+
+- [Streamlit](https://streamlit.io)
+- [google-generativeai](https://pypi.org/project/google-generativeai/)
+- [pandas](https://pypi.org/project/pandas/)
+- [fpdf2](https://pypi.org/project/fpdf2/) (for PDF creation)
 
-1.  **Clone the repository:**
-    ```bash
-    git clone [https://github.com/your-username/brand-audit-app.git](https://github.com/your-username/brand-audit-app.git)
-    cd brand-audit-app
-    ```
 
-2.  **Create a virtual environment (recommended):**
-    ```bash
-    python -m venv venv
-    source venv/bin/activate  # On Windows use `venv\Scripts\activate`
-    ```
+## Quickstart
 
-3.  **Install the required packages:**
-    ```bash
-    pip install -r requirements.txt
-    ```
-
-## ▶️ How to Run the App
-
-Once you've installed the dependencies, you can run the Streamlit app with the following command:
 
 ```bash
+# 1) Clone and enter the repo
+git clone <your-repo-url>.git
+cd <your-repo-folder>
+
+
+# 2) Create and activate a venv (recommended)
+python -m venv .venv
+# Windows
+. .venv/Scripts/activate
+# macOS/Linux
+source .venv/bin/activate
+
+
+# 3) Install dependencies
+pip install -r requirements.txt
+
+
+# 4) Add your Google API key (Gemini)
+# Option A: Environment variable
+# (Windows PowerShell)
+$env:GOOGLE_API_KEY="YOUR_API_KEY"
+# (macOS/Linux)
+export GOOGLE_API_KEY="YOUR_API_KEY"
+
+
+# Option B: Streamlit secrets
+# Create .streamlit/secrets.toml with:
+# GOOGLE_API_KEY = "YOUR_API_KEY"
+
+
+# 5) Run the app
 streamlit run app.py
-
-Your web browser should open with the application running.
-
-🔧 Configuration
-You can customize the app's theme and other settings in the .streamlit/config.toml file.
-
-
----
-
-### `requirements.txt`
-
-This file lists all the Python libraries your project needs to run. This allows anyone to install the exact same dependencies easily.
-
-```text
-streamlit
-pandas
-
-(You would add other libraries here as you build out the real audit logic, such as requests, beautifulsoup4, google-generativeai, etc.)
-
-.streamlit/config.toml
-This file is for configuring your Streamlit app's appearance and behavior. For example, you can set a custom theme.
-
-[theme]
-primaryColor="#FF4B4B"
-backgroundColor="#0E1117"
-secondaryBackgroundColor="#262730"
-textColor="#FAFAFA"
-font="sans serif"
-
-.gitignore
-This file tells Git which files or folders to ignore. This is useful for keeping your repository clean by excluding virtual environments, cache files, and other non-essential items.
-
-# Byte-compiled / optimized / DLL files
-__pycache__/
-*.py[cod]
-*$py.class
-
-# Virtual environment
-venv/
-.venv/
-env/
-.env
-
-# Streamlit secrets
-.streamlit/secrets.toml
