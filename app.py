@@ -19,23 +19,23 @@ MODEL_NAME = "gemini-2.5-pro"
 
 
 def load_api_key() -> str:
-"""Load API key from Streamlit secrets or environment."""
-key = None
-try:
-key = st.secrets.get("GOOGLE_API_KEY", None) # type: ignore[attr-defined]
+  """Load API key from Streamlit secrets or environment."""
+  key = None
+  try:
+    key = st.secrets.get("GOOGLE_API_KEY", None) # type: ignore[attr-defined]
 except Exception:
-key = None
+    key = None
 if not key:
-key = os.getenv("GOOGLE_API_KEY", "")
+    key = os.getenv("GOOGLE_API_KEY", "")
 return key or ""
 
 
 
 
 def init_gemini(api_key: str):
-"""Configure the google-generativeai client and return a model instance."""
-genai.configure(api_key=api_key)
-return genai.GenerativeModel(MODEL_NAME)
+    """Configure the google-generativeai client and return a model instance."""
+    genai.configure(api_key=api_key)
+    return genai.GenerativeModel(MODEL_NAME)
 
 
 
