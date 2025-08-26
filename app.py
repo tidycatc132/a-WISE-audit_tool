@@ -17,7 +17,6 @@ MODEL_NAME = "gemini-2.5-pro"
 # -------------------------
 
 def load_api_key() -> str:
-    """Load API key from Streamlit secrets or environment."""
     key = None
     try:
         key = st.secrets.get("GOOGLE_API_KEY", None)  # type: ignore[attr-defined]
@@ -29,7 +28,6 @@ def load_api_key() -> str:
 
 
 def init_gemini(api_key: str):
-    """Configure the google-generativeai client and return a model instance."""
     genai.configure(api_key=api_key)
     return genai.GenerativeModel(MODEL_NAME)
 
@@ -72,36 +70,90 @@ def build_prompt(template: str, website_url: str, brand_name: str, audience: str
 
 
 # -------------------------
-# PDF Export
+# Unicode-safe PDF Export (fpdf2)
 # -------------------------
+UNICODE_REPLACEMENTS = {
+    "\u2014": "-",  # em dash —
+    "\u2013": "-",  # en dash –
+    "\u2022": "*",  # bullet •
+    "\u00A0": " ",  # nbsp
+    "\u2018": "'", "\u2019": "'",  # curly single quotes
+    "\u201C": '"', "\u201D": '"',  # curly double quotes
+}
+
+
+def sanitize_unicode(s: str) -> str:
+    for bad, good in UNICODE_REPLACEMENTS.items():
+        s = s.replace(bad, good)
+    return s
+
+
 class PDF(FPDF):
     def header(self):
         if self.page_no() > 1:
-            self.set_font("Helvetica", style="I", size=8)
+            self.set_font(self._body_font, style="I", size=8)
             self.cell(0, 6, APP_TITLE, align="R")
             self.ln(8)
+
+    def set_fonts(self, body_font: str, bold_font: str):
+        self._body_font = body_font
+        self._bold_font = bold_font
+
+
+def _setup_fonts(pdf: FPDF) -> tuple[str, str]:
+    """Try to use bundled Unicode fonts (DejaVu). Fallback to core fonts + sanitize."""
+    fonts_dir = Path(__file__).parent / "fonts"
+    regular = fonts_dir / "DejaVuSans.ttf"
+    bold = fonts_dir / "DejaVuSans-Bold.ttf"
+
+    if regular.exists() and bold.exists():
+        pdf.add_font("DejaVu", "", str(regular), uni=True)
+        pdf.add_font("DejaVu", "B", str(bold), uni=True)
+        pdf.set_fonts("DejaVu", "DejaVu")
+        return "DejaVu", "DejaVu"
+    else:
+        # Use core Helvetica (non-Unicode) and sanitize text later
+        pdf.set_fonts("Helvetica", "Helvetica")
+        return "Helvetica", "Helvetica"
 
 
 def markdown_to_pdf_bytes(markdown_text: str, title: str = "Audit Report") -> bytes:
     pdf = PDF()
     pdf.set_auto_page_break(auto=True, margin=12)
+
+    body_font, bold_font = _setup_fonts(pdf)
+
     pdf.add_page()
 
-    pdf.set_font("Helvetica", "B", 16)
-    pdf.multi_cell(0, 10, title)
+    # Title block
+    if bold_font:
+        pdf.set_font(bold_font, "B", 16)
+    else:
+        pdf.set_font("Helvetica", "B", 16)
+
+    safe_title = title if body_font == "DejaVu" else sanitize_unicode(title)
+    pdf.multi_cell(0, 10, safe_title)
     pdf.ln(2)
 
-    pdf.set_font("Helvetica", size=11)
+    if body_font:
+        pdf.set_font(body_font, size=11)
+    else:
+        pdf.set_font("Helvetica", size=11)
 
     in_code_block = False
     code_buffer: list[str] = []
 
     def flush_code():
         if code_buffer:
+            # Use monospace-like rendering with Courier; safe for ASCII
             pdf.set_font("Courier", size=9)
             for line in code_buffer:
-                pdf.multi_cell(0, 5, line)
-            pdf.set_font("Helvetica", size=11)
+                safe = line if body_font == "DejaVu" else sanitize_unicode(line)
+                pdf.multi_cell(0, 5, safe)
+            if body_font:
+                pdf.set_font(body_font, size=11)
+            else:
+                pdf.set_font("Helvetica", size=11)
             code_buffer.clear()
 
     for raw_line in markdown_text.splitlines():
@@ -122,22 +174,42 @@ def markdown_to_pdf_bytes(markdown_text: str, title: str = "Audit Report") -> by
             pdf.ln(4)
             continue
 
+        safe_line = line if body_font == "DejaVu" else sanitize_unicode(line)
+
         if line.startswith("### "):
-            pdf.set_font("Helvetica", "B", 12)
-            pdf.multi_cell(0, 8, line[4:])
-            pdf.set_font("Helvetica", size=11)
+            if bold_font:
+                pdf.set_font(bold_font, "B", 12)
+            else:
+                pdf.set_font("Helvetica", "B", 12)
+            pdf.multi_cell(0, 8, safe_line[4:])
+            if body_font:
+                pdf.set_font(body_font, size=11)
+            else:
+                pdf.set_font("Helvetica", size=11)
         elif line.startswith("## "):
-            pdf.set_font("Helvetica", "B", 13)
-            pdf.multi_cell(0, 9, line[3:])
-            pdf.set_font("Helvetica", size=11)
+            if bold_font:
+                pdf.set_font(bold_font, "B", 13)
+            else:
+                pdf.set_font("Helvetica", "B", 13)
+            pdf.multi_cell(0, 9, safe_line[3:])
+            if body_font:
+                pdf.set_font(body_font, size=11)
+            else:
+                pdf.set_font("Helvetica", size=11)
         elif line.startswith("# "):
-            pdf.set_font("Helvetica", "B", 15)
-            pdf.multi_cell(0, 10, line[2:])
-            pdf.set_font("Helvetica", size=11)
+            if bold_font:
+                pdf.set_font(bold_font, "B", 15)
+            else:
+                pdf.set_font("Helvetica", "B", 15)
+            pdf.multi_cell(0, 10, safe_line[2:])
+            if body_font:
+                pdf.set_font(body_font, size=11)
+            else:
+                pdf.set_font("Helvetica", size=11)
         elif line.startswith(("- ", "* ")):
-            pdf.multi_cell(0, 6, f"• {line[2:]}")
+            pdf.multi_cell(0, 6, f"• {safe_line[2:]}")
         else:
-            wrapped = textwrap.fill(line, width=110)
+            wrapped = textwrap.fill(safe_line, width=110)
             pdf.multi_cell(0, 6, wrapped)
 
     flush_code()
@@ -223,7 +295,8 @@ if run:
             st.markdown(audit_md)
 
             timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-            pdf_bytes = markdown_to_pdf_bytes(audit_md, title=f"{brand_name} — SEO Website & Brand Audit")
+            pdf_title = f"{brand_name} — SEO Website & Brand Audit"
+            pdf_bytes = markdown_to_pdf_bytes(audit_md, title=pdf_title)
             st.download_button(
                 label="⬇️ Download PDF",
                 data=pdf_bytes,
