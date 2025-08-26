@@ -22,7 +22,6 @@ def load_api_key() -> str:
 """Load API key from Streamlit secrets or environment."""
 key = None
 try:
-# Streamlit Cloud or local secrets
 key = st.secrets.get("GOOGLE_API_KEY", None) # type: ignore[attr-defined]
 except Exception:
 key = None
