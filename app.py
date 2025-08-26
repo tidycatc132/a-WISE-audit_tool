@@ -4,51 +4,76 @@ from io import BytesIO
 from pathlib import Path
 from datetime import datetime
 
-
 import streamlit as st
 import pandas as pd
 import google.generativeai as genai
 from fpdf import FPDF
+
 APP_TITLE = "Website Audit — Streamlit + Gemini 2.5 Pro"
 MODEL_NAME = "gemini-2.5-pro"
 
 
 # -------------------------
-# Utilities
+# Helpers
 # -------------------------
 
 
 def load_api_key() -> str:
 """Load API key from Streamlit secrets or environment."""
-key = st.secrets.get("GOOGLE_API_KEY", None) if hasattr(st, "secrets") else None
+key = None
+try:
+# Streamlit Cloud or local secrets
+key = st.secrets.get("GOOGLE_API_KEY", None) # type: ignore[attr-defined]
+except Exception:
+key = None
 if not key:
-key = os.getenv("GOOGLE_API_KEY")
+key = os.getenv("GOOGLE_API_KEY", "")
 return key or ""
 
 
 
 
 def init_gemini(api_key: str):
+"""Configure the google-generativeai client and return a model instance."""
 genai.configure(api_key=api_key)
 return genai.GenerativeModel(MODEL_NAME)
 
 
 
 
+def _default_prompt_template() -> str:
+# Lightweight built-in fallback in case prompt_template.md is missing
+return (
+"Act as an expert Digital Marketing Strategist and SEO Analyst.\n\n"
+"Your objective is to perform a comprehensive SEO website and brand audit for the provided business. "
+"Focus on on-page, technical, content quality, structured data, off-page, and a prioritized action plan.\n\n"
+"Website URL: {{website_url}}\n"
+"Brand/Company Name: {{brand_name}}\n"
+"Primary Target Audience: {{audience}}\n"
+"Top Competitors (one per line):\n{{competitors_block}}\n\n"
+"Please produce a professional Markdown report with: Executive Summary; On-Page & Content; Keywords & Rankings; "
+"Technical SEO; Structured Data; Off-Page & Brand Visibility; and a prioritized What/Why/How Recommendations list."
+)
+
+
+
+
 def read_prompt_template() -> str:
+"""Read prompt_template.md from repo root; fall back to a built-in template."""
 template_path = Path(__file__).parent / "prompt_template.md"
+if template_path.exists():
+try:
 return template_path.read_text(encoding="utf-8")
+except Exception:
+pass
+return _default_prompt_template()
 
 
 
 
 def build_prompt(template: str, website_url: str, brand_name: str, audience: str, competitors: list[str]) -> str:
-# Prepare competitors block — each on its own line, or N/A
 comp_block = "\n".join([c.strip() for c in competitors if c.strip()]) or "N/A"
-# Fallback for audience
-audience = audience.strip() or "Not provided"
-
-
+audience = (audience or "").strip() or "Not provided"
 prompt = (
 template
 .replace("{{website_url}}", website_url.strip())
@@ -58,21 +83,15 @@ template
 )
 return prompt
 
-
-
-
 # -------------------------
 # PDF Export (simple Markdown-ish to PDF)
 # -------------------------
 class PDF(FPDF):
 def header(self):
-# Minimal header (skip on first page for a cleaner title block)
 if self.page_no() > 1:
 self.set_font("Helvetica", style="I", size=8)
 self.cell(0, 6, APP_TITLE, align="R")
 self.ln(8)
-
-
 
 
 def markdown_to_pdf_bytes(markdown_text: str, title: str = "Audit Report") -> bytes:
@@ -90,13 +109,40 @@ pdf.ln(2)
 pdf.set_font("Helvetica", size=11)
 
 
-# Naive Markdown handling: headings and bullets
+in_code_block = False
+code_buffer: list[str] = []
+
+
+def flush_code():
+if code_buffer:
+pdf.set_font("Courier", size=9)
+for line in code_buffer:
+pdf.multi_cell(0, 5, line)
+pdf.set_font("Helvetica", size=11)
+code_buffer.clear()
+
+
 for raw_line in markdown_text.splitlines():
-line = raw_line.rstrip()
-if not line:
-pdf.ln(4)
+line = raw_line.rstrip("\n")
+# Handle fenced code blocks
+if line.strip().startswith("```"):
+if in_code_block:
+# closing fence — flush
+flush_code()
+in_code_block = False
+else:
+in_code_block = True
 continue
 
+
+if in_code_block:
+code_buffer.append(line)
+continue
+
+
+if not line.strip():
+pdf.ln(4)
+continue
 
 if line.startswith("### "):
 pdf.set_font("Helvetica", "B", 12)
@@ -113,23 +159,72 @@ pdf.set_font("Helvetica", size=11)
 elif line.startswith(("- ", "* ")):
 pdf.multi_cell(0, 6, f"• {line[2:]}")
 else:
-# Wrap long paragraphs
 wrapped = textwrap.fill(line, width=110)
 pdf.multi_cell(0, 6, wrapped)
+
+
+# In case file ended inside a code block
+flush_code()
 
 
 buf = BytesIO()
 pdf.output(buf)
 return buf.getvalue()
 
+# -------------------------
+# Streamlit UI
+# -------------------------
+st.set_page_config(page_title=APP_TITLE, page_icon="🤖", layout="wide")
+st.title(APP_TITLE)
+st.caption("Turns your audit prompt into a working tool with PDF export.")
 
+with st.sidebar:
+st.header("API & Settings")
+default_key = load_api_key()
+api_key = st.text_input(
+"Google API Key (Gemini)",
+value=default_key,
+type="password",
+help=(
+"Set via environment variable GOOGLE_API_KEY or Streamlit secrets (\n"
+"Create .streamlit/secrets.toml with: GOOGLE_API_KEY = 'YOUR_API_KEY')."
+),
+)
+st.markdown("---")
+st.markdown(
+"**Model:** `gemini-2.5-pro` " +
+"Library: `google-generativeai`"
 )
 
 
-run = st.button("Run Audit", type="primary")
+col1, col2 = st.columns([1, 1])
+with col1:
+website_url = st.text_input("Website URL", placeholder="https://example.com")
+brand_name = st.text_input("Brand/Company Name", placeholder="WISE Digital Partners")
+audience = st.text_area(
+"Primary Target Audience (optional)",
+placeholder="Describe your primary audience…",
+)
+with col2:
+competitors_raw = st.text_area(
+"Top Competitors (one per line, optional)",
+placeholder=(
+"https://competitor-1.com\nhttps://competitor-2.com\nhttps://competitor-3.com"
+),
+height=120,
+)
 
 
-# Compact metadata table using pandas (demonstrates pandas usage)
+col_run, col_clear = st.columns([0.3, 0.7])
+run = col_run.button("Run Audit", type="primary")
+clear = col_clear.button("Clear Inputs")
+
+
+if clear:
+st.session_state.clear()
+st.rerun()
+
+# Show a compact metadata table using pandas
 meta_df = pd.DataFrame(
 {
 "Field": ["Website URL", "Brand", "Audience", "Competitors"],
@@ -144,7 +239,9 @@ audience or "—",
 with st.expander("Input Summary (pandas)"):
 st.dataframe(meta_df, hide_index=True, use_container_width=True)
 
-
+# -------------------------
+# Run audit
+# -------------------------
 if run:
 if not api_key:
 st.error("Please provide a Google API key (Gemini) in the sidebar.")
@@ -165,15 +262,16 @@ brand_name=brand_name,
 audience=audience,
 competitors=competitors,
 )
-
-
 with st.spinner("Generating audit with Gemini 2.5 Pro…"):
 response = model.generate_content(full_prompt)
-audit_md = (response.text or "").strip()
+
+
+audit_md = (getattr(response, "text", None) or "").strip()
 
 
 if not audit_md:
-st.warning("The model returned no text. Try again or adjust inputs.")
+st.warning(
+"The model returned no text. Try again, adjust inputs, or check your API quota.")
 else:
 st.subheader("Audit Preview")
 st.markdown(audit_md)
