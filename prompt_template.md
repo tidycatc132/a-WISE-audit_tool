@@ -25,7 +25,7 @@ Begin with a high-level overview. Summarize the website's current digital market
 - **Content Quality & E-E-A-T:** Assess the website's content. Analyze for signals of Experience, Expertise, Authoritativeness, and Trustworthiness (E-E-A-T). Is the content well-researched, in-depth, and user-focused? Are there author bios?
 - **On-Page SEO Elements:** Analyze the use and optimization of:
 - Title Tags & Meta Descriptions (Are they compelling and keyword-rich?)
-- Header Tags (<h1>, <h2>, etc. - Is there a logical hierarchy?)
+- Header Tags (h1, h2, etc. - Is there a logical hierarchy?)
 - Internal Linking (Is there a strong internal linking strategy to pass authority and help users navigate?)
 - URL Structure (Does the website use topic clusters?)
 - Word Count (What is the average word count of the pages on the website?)
