@@ -15,8 +15,8 @@ MODEL_NAME = "gemini-2.5-pro"
 # -------------------------
 # Helpers
 # -------------------------
-
 def load_api_key() -> str:
+    """Load API key from Streamlit secrets or environment."""
     key = None
     try:
         key = st.secrets.get("GOOGLE_API_KEY", None)  # type: ignore[attr-defined]
@@ -28,6 +28,7 @@ def load_api_key() -> str:
 
 
 def init_gemini(api_key: str):
+    """Configure the google-generativeai client and return a model instance."""
     genai.configure(api_key=api_key)
     return genai.GenerativeModel(MODEL_NAME)
 
@@ -72,6 +73,7 @@ def build_prompt(template: str, website_url: str, brand_name: str, audience: str
 # -------------------------
 # Unicode-safe PDF Export (fpdf2)
 # -------------------------
+# Replace common unsupported characters if we don't have a Unicode font available.
 UNICODE_REPLACEMENTS = {
     "\u2014": "-",  # em dash —
     "\u2013": "-",  # en dash –
@@ -81,11 +83,34 @@ UNICODE_REPLACEMENTS = {
     "\u201C": '"', "\u201D": '"',  # curly double quotes
 }
 
-
 def sanitize_unicode(s: str) -> str:
     for bad, good in UNICODE_REPLACEMENTS.items():
         s = s.replace(bad, good)
     return s
+
+def soft_wrap_long_tokens(s: str, limit: int = 60) -> str:
+    """
+    Insert spaces into very long unbroken tokens (like URLs) so FPDF can wrap them.
+    """
+    tokens = s.split()
+    wrapped_tokens = []
+    for t in tokens:
+        if len(t) <= limit:
+            wrapped_tokens.append(t)
+            continue
+        # Prefer breaking at slashes if it looks like a URL
+        if "://" in t or "/" in t:
+            t = t.replace("/", "/ ")
+        # If still too long, chunk every `limit` chars
+        chunks = [t[i:i+limit] for i in range(0, len(t), limit)]
+        wrapped_tokens.append(" ".join(chunks))
+    return " ".join(wrapped_tokens)
+
+def prepare_line_for_pdf(line: str, using_unicode: bool) -> str:
+    # Sanitize if not using Unicode fonts, then ensure extremely long tokens can wrap
+    safe = line if using_unicode else sanitize_unicode(line)
+    safe = soft_wrap_long_tokens(safe, limit=60)
+    return safe
 
 
 class PDF(FPDF):
@@ -100,8 +125,11 @@ class PDF(FPDF):
         self._bold_font = bold_font
 
 
-def _setup_fonts(pdf: FPDF) -> tuple[str, str]:
-    """Try to use bundled Unicode fonts (DejaVu). Fallback to core fonts + sanitize."""
+def _setup_fonts(pdf: FPDF) -> tuple[str, str, bool]:
+    """
+    Try to use bundled Unicode fonts (DejaVu). Fallback to core Helvetica + sanitization.
+    Returns (body_font_name, bold_font_name, using_unicode_bool)
+    """
     fonts_dir = Path(__file__).parent / "fonts"
     regular = fonts_dir / "DejaVuSans.ttf"
     bold = fonts_dir / "DejaVuSans-Bold.ttf"
@@ -110,35 +138,28 @@ def _setup_fonts(pdf: FPDF) -> tuple[str, str]:
         pdf.add_font("DejaVu", "", str(regular), uni=True)
         pdf.add_font("DejaVu", "B", str(bold), uni=True)
         pdf.set_fonts("DejaVu", "DejaVu")
-        return "DejaVu", "DejaVu"
+        return "DejaVu", "DejaVu", True
     else:
         # Use core Helvetica (non-Unicode) and sanitize text later
         pdf.set_fonts("Helvetica", "Helvetica")
-        return "Helvetica", "Helvetica"
+        return "Helvetica", "Helvetica", False
 
 
 def markdown_to_pdf_bytes(markdown_text: str, title: str = "Audit Report") -> bytes:
     pdf = PDF()
     pdf.set_auto_page_break(auto=True, margin=12)
 
-    body_font, bold_font = _setup_fonts(pdf)
-
+    body_font, bold_font, using_unicode = _setup_fonts(pdf)
     pdf.add_page()
 
     # Title block
-    if bold_font:
-        pdf.set_font(bold_font, "B", 16)
-    else:
-        pdf.set_font("Helvetica", "B", 16)
-
-    safe_title = title if body_font == "DejaVu" else sanitize_unicode(title)
+    pdf.set_font(bold_font, "B", 16)
+    safe_title = prepare_line_for_pdf(title, using_unicode)
     pdf.multi_cell(0, 10, safe_title)
     pdf.ln(2)
 
-    if body_font:
-        pdf.set_font(body_font, size=11)
-    else:
-        pdf.set_font("Helvetica", size=11)
+    # Slightly smaller body font helps fit long URLs
+    pdf.set_font(body_font, size=10)
 
     in_code_block = False
     code_buffer: list[str] = []
@@ -148,16 +169,15 @@ def markdown_to_pdf_bytes(markdown_text: str, title: str = "Audit Report") -> by
             # Use monospace-like rendering with Courier; safe for ASCII
             pdf.set_font("Courier", size=9)
             for line in code_buffer:
-                safe = line if body_font == "DejaVu" else sanitize_unicode(line)
+                safe = prepare_line_for_pdf(line, using_unicode)
                 pdf.multi_cell(0, 5, safe)
-            if body_font:
-                pdf.set_font(body_font, size=11)
-            else:
-                pdf.set_font("Helvetica", size=11)
+            pdf.set_font(body_font, size=10)
             code_buffer.clear()
 
     for raw_line in markdown_text.splitlines():
         line = raw_line.rstrip("\n")
+
+        # Handle fenced code blocks
         if line.strip().startswith("```"):
             if in_code_block:
                 flush_code()
@@ -174,44 +194,30 @@ def markdown_to_pdf_bytes(markdown_text: str, title: str = "Audit Report") -> by
             pdf.ln(4)
             continue
 
-        safe_line = line if body_font == "DejaVu" else sanitize_unicode(line)
+        safe_line = prepare_line_for_pdf(line, using_unicode)
 
         if line.startswith("### "):
-            if bold_font:
-                pdf.set_font(bold_font, "B", 12)
-            else:
-                pdf.set_font("Helvetica", "B", 12)
-            pdf.multi_cell(0, 8, safe_line[4:])
-            if body_font:
-                pdf.set_font(body_font, size=11)
-            else:
-                pdf.set_font("Helvetica", size=11)
+            pdf.set_font(bold_font, "B", 12)
+            pdf.multi_cell(0, 8, prepare_line_for_pdf(line[4:], using_unicode))
+            pdf.set_font(body_font, size=10)
         elif line.startswith("## "):
-            if bold_font:
-                pdf.set_font(bold_font, "B", 13)
-            else:
-                pdf.set_font("Helvetica", "B", 13)
-            pdf.multi_cell(0, 9, safe_line[3:])
-            if body_font:
-                pdf.set_font(body_font, size=11)
-            else:
-                pdf.set_font("Helvetica", size=11)
+            pdf.set_font(bold_font, "B", 13)
+            pdf.multi_cell(0, 9, prepare_line_for_pdf(line[3:], using_unicode))
+            pdf.set_font(body_font, size=10)
         elif line.startswith("# "):
-            if bold_font:
-                pdf.set_font(bold_font, "B", 15)
-            else:
-                pdf.set_font("Helvetica", "B", 15)
-            pdf.multi_cell(0, 10, safe_line[2:])
-            if body_font:
-                pdf.set_font(body_font, size=11)
-            else:
-                pdf.set_font("Helvetica", size=11)
+            pdf.set_font(bold_font, "B", 15)
+            pdf.multi_cell(0, 10, prepare_line_for_pdf(line[2:], using_unicode))
+            pdf.set_font(body_font, size=10)
         elif line.startswith(("- ", "* ")):
-            pdf.multi_cell(0, 6, f"• {safe_line[2:]}")
+            pdf.multi_cell(0, 6, f"• {prepare_line_for_pdf(line[2:], using_unicode)}")
         else:
-            wrapped = textwrap.fill(safe_line, width=110)
+            # Allow breaking long words/hyphens too, after token-level wrapping
+            wrapped = textwrap.fill(
+                safe_line, width=110, break_long_words=True, break_on_hyphens=True
+            )
             pdf.multi_cell(0, 6, wrapped)
 
+    # In case file ended inside a code block
     flush_code()
 
     buf = BytesIO()
@@ -224,7 +230,7 @@ def markdown_to_pdf_bytes(markdown_text: str, title: str = "Audit Report") -> by
 # -------------------------
 st.set_page_config(page_title=APP_TITLE, page_icon="🤖", layout="wide")
 st.title(APP_TITLE)
-st.caption("Add some quick information and get a WISE website and brand audit in return!")
+st.caption("Provide some basic information and get an audit in return.")
 
 with st.sidebar:
     st.header("API & Settings")
@@ -255,6 +261,7 @@ with col2:
 
 run = st.button("Run Audit", type="primary")
 
+# Compact metadata table using pandas (demonstrates pandas usage)
 meta_df = pd.DataFrame(
     {
         "Field": ["Website URL", "Brand", "Audience", "Competitors"],
@@ -269,6 +276,9 @@ meta_df = pd.DataFrame(
 with st.expander("Input Summary (pandas)"):
     st.dataframe(meta_df, hide_index=True, use_container_width=True)
 
+# -------------------------
+# Run audit
+# -------------------------
 if run:
     if not api_key:
         st.error("Please provide a Google API key (Gemini) in the sidebar.")
@@ -281,7 +291,13 @@ if run:
         model = init_gemini(api_key)
         template = read_prompt_template()
         competitors = [c for c in competitors_raw.splitlines() if c.strip()]
-        full_prompt = build_prompt(template, website_url, brand_name, audience, competitors)
+        full_prompt = build_prompt(
+            template=template,
+            website_url=website_url,
+            brand_name=brand_name,
+            audience=audience,
+            competitors=competitors,
+        )
 
         with st.spinner("Generating audit with Gemini 2.5 Pro…"):
             response = model.generate_content(full_prompt)
