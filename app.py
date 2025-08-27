@@ -9,7 +9,7 @@ import pandas as pd
 import google.generativeai as genai
 from fpdf import FPDF
 
-APP_TITLE = "Website Audit — Streamlit + Gemini 2.5 Pro"
+APP_TITLE = "a WISE Website Audit"
 MODEL_NAME = "gemini-2.5-pro"
 
 # -------------------------
@@ -224,7 +224,7 @@ def markdown_to_pdf_bytes(markdown_text: str, title: str = "Audit Report") -> by
 # -------------------------
 st.set_page_config(page_title=APP_TITLE, page_icon="🤖", layout="wide")
 st.title(APP_TITLE)
-st.caption("Turns your audit prompt into a working tool with PDF export.")
+st.caption("Add some quick information and get a WISE website and brand audit in return!")
 
 with st.sidebar:
     st.header("API & Settings")
