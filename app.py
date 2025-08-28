@@ -1,15 +1,12 @@
 import os
-import textwrap
-from io import BytesIO
 from pathlib import Path
 from datetime import datetime
 
 import streamlit as st
 import pandas as pd
 import google.generativeai as genai
-from fpdf import FPDF
 
-APP_TITLE = "a WISE Website Audit"
+APP_TITLE = "a WISE website audit tool"
 MODEL_NAME = "gemini-2.5-pro"
 
 # -------------------------
@@ -71,166 +68,11 @@ def build_prompt(template: str, website_url: str, brand_name: str, audience: str
 
 
 # -------------------------
-# Unicode-safe PDF Export (fpdf2)
-# -------------------------
-# Replace common unsupported characters if we don't have a Unicode font available.
-UNICODE_REPLACEMENTS = {
-    "\u2014": "-",  # em dash —
-    "\u2013": "-",  # en dash –
-    "\u2022": "*",  # bullet •
-    "\u00A0": " ",  # nbsp
-    "\u2018": "'", "\u2019": "'",  # curly single quotes
-    "\u201C": '"', "\u201D": '"',  # curly double quotes
-}
-
-def sanitize_unicode(s: str) -> str:
-    for bad, good in UNICODE_REPLACEMENTS.items():
-        s = s.replace(bad, good)
-    return s
-
-def soft_wrap_long_tokens(s: str, limit: int = 60) -> str:
-    """
-    Insert spaces into very long unbroken tokens (like URLs) so FPDF can wrap them.
-    """
-    tokens = s.split()
-    wrapped_tokens = []
-    for t in tokens:
-        if len(t) <= limit:
-            wrapped_tokens.append(t)
-            continue
-        # Prefer breaking at slashes if it looks like a URL
-        if "://" in t or "/" in t:
-            t = t.replace("/", "/ ")
-        # If still too long, chunk every `limit` chars
-        chunks = [t[i:i+limit] for i in range(0, len(t), limit)]
-        wrapped_tokens.append(" ".join(chunks))
-    return " ".join(wrapped_tokens)
-
-def prepare_line_for_pdf(line: str, using_unicode: bool) -> str:
-    # Sanitize if not using Unicode fonts, then ensure extremely long tokens can wrap
-    safe = line if using_unicode else sanitize_unicode(line)
-    safe = soft_wrap_long_tokens(safe, limit=60)
-    return safe
-
-
-class PDF(FPDF):
-    def header(self):
-        if self.page_no() > 1:
-            self.set_font(self._body_font, style="I", size=8)
-            self.cell(0, 6, APP_TITLE, align="R")
-            self.ln(8)
-
-    def set_fonts(self, body_font: str, bold_font: str):
-        self._body_font = body_font
-        self._bold_font = bold_font
-
-
-def _setup_fonts(pdf: FPDF) -> tuple[str, str, bool]:
-    """
-    Try to use bundled Unicode fonts (DejaVu). Fallback to core Helvetica + sanitization.
-    Returns (body_font_name, bold_font_name, using_unicode_bool)
-    """
-    fonts_dir = Path(__file__).parent / "fonts"
-    regular = fonts_dir / "DejaVuSans.ttf"
-    bold = fonts_dir / "DejaVuSans-Bold.ttf"
-
-    if regular.exists() and bold.exists():
-        pdf.add_font("DejaVu", "", str(regular), uni=True)
-        pdf.add_font("DejaVu", "B", str(bold), uni=True)
-        pdf.set_fonts("DejaVu", "DejaVu")
-        return "DejaVu", "DejaVu", True
-    else:
-        # Use core Helvetica (non-Unicode) and sanitize text later
-        pdf.set_fonts("Helvetica", "Helvetica")
-        return "Helvetica", "Helvetica", False
-
-
-def markdown_to_pdf_bytes(markdown_text: str, title: str = "Audit Report") -> bytes:
-    pdf = PDF()
-    pdf.set_auto_page_break(auto=True, margin=12)
-
-    body_font, bold_font, using_unicode = _setup_fonts(pdf)
-    pdf.add_page()
-
-    # Title block
-    pdf.set_font(bold_font, "B", 16)
-    safe_title = prepare_line_for_pdf(title, using_unicode)
-    pdf.multi_cell(0, 10, safe_title)
-    pdf.ln(2)
-
-    # Slightly smaller body font helps fit long URLs
-    pdf.set_font(body_font, size=10)
-
-    in_code_block = False
-    code_buffer: list[str] = []
-
-    def flush_code():
-        if code_buffer:
-            # Use monospace-like rendering with Courier; safe for ASCII
-            pdf.set_font("Courier", size=9)
-            for line in code_buffer:
-                safe = prepare_line_for_pdf(line, using_unicode)
-                pdf.multi_cell(0, 5, safe)
-            pdf.set_font(body_font, size=10)
-            code_buffer.clear()
-
-    for raw_line in markdown_text.splitlines():
-        line = raw_line.rstrip("\n")
-
-        # Handle fenced code blocks
-        if line.strip().startswith("```"):
-            if in_code_block:
-                flush_code()
-                in_code_block = False
-            else:
-                in_code_block = True
-            continue
-
-        if in_code_block:
-            code_buffer.append(line)
-            continue
-
-        if not line.strip():
-            pdf.ln(4)
-            continue
-
-        safe_line = prepare_line_for_pdf(line, using_unicode)
-
-        if line.startswith("### "):
-            pdf.set_font(bold_font, "B", 12)
-            pdf.multi_cell(0, 8, prepare_line_for_pdf(line[4:], using_unicode))
-            pdf.set_font(body_font, size=10)
-        elif line.startswith("## "):
-            pdf.set_font(bold_font, "B", 13)
-            pdf.multi_cell(0, 9, prepare_line_for_pdf(line[3:], using_unicode))
-            pdf.set_font(body_font, size=10)
-        elif line.startswith("# "):
-            pdf.set_font(bold_font, "B", 15)
-            pdf.multi_cell(0, 10, prepare_line_for_pdf(line[2:], using_unicode))
-            pdf.set_font(body_font, size=10)
-        elif line.startswith(("- ", "* ")):
-            pdf.multi_cell(0, 6, f"• {prepare_line_for_pdf(line[2:], using_unicode)}")
-        else:
-            # Allow breaking long words/hyphens too, after token-level wrapping
-            wrapped = textwrap.fill(
-                safe_line, width=110, break_long_words=True, break_on_hyphens=True
-            )
-            pdf.multi_cell(0, 6, wrapped)
-
-    # In case file ended inside a code block
-    flush_code()
-
-    buf = BytesIO()
-    pdf.output(buf)
-    return buf.getvalue()
-
-
-# -------------------------
 # Streamlit UI
 # -------------------------
 st.set_page_config(page_title=APP_TITLE, page_icon="🤖", layout="wide")
 st.title(APP_TITLE)
-st.caption("Provide some basic information and get an audit in return.")
+st.caption("a little information = A LOT OF AUDIT.")
 
 with st.sidebar:
     st.header("API & Settings")
@@ -310,16 +152,8 @@ if run:
             st.subheader("Audit Preview")
             st.markdown(audit_md)
 
+            # Markdown download only
             timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-            pdf_title = f"{brand_name} — SEO Website & Brand Audit"
-            pdf_bytes = markdown_to_pdf_bytes(audit_md, title=pdf_title)
-            st.download_button(
-                label="⬇️ Download PDF",
-                data=pdf_bytes,
-                file_name=f"audit_{brand_name}_{timestamp}.pdf".replace(" ", "_"),
-                mime="application/pdf",
-            )
-
             st.download_button(
                 label="⬇️ Download Markdown",
                 data=audit_md.encode("utf-8"),
